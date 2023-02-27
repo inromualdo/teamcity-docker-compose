@@ -81,6 +81,7 @@ services:
       - --providers.docker
       # Only enabled containers should be exposed
       - --providers.docker.exposedByDefault=false
+      - --providers.docker.watch=true
       # We want to use the dashbaord
       - --api.dashboard=true
       # The entrypoints we ant to expose
