@@ -1,26 +1,29 @@
-version: '3'
+version: '3.8'
 
 services:
   server:
     image: jetbrains/teamcity-server:latest
     networks:
-      - web
+      - reverse-proxy
       - default
     volumes:
       - "/opt/teamcity/data:/data/teamcity_server/datadir"
       - "/opt/teamcity/logs:/opt/teamcity/logs"
-    hostname: ${VIRTUAL_HOST}
     ports:
-      - "8111"
+      - "8111:8111"
     depends_on:
       - postgres
     env_file: .env
     labels:
       - "traefik.enable=true"
-      - "traefik.backend=server"
-      - "traefik.frontend.rule=Host:${VIRTUAL_HOST}"
-      - "traefik.docker.network=web"
-      - "traefik.port=8111"
+      - "traefik.docker.network=reverse-proxy"
+      - "traefik.http.routers.server.service=server"
+      # URL pour accéder à ce conteneur
+      - "traefik.http.routers.server.rule=Host(`cid.kaxi.app`)"
+      # Activation de TLS
+      - "traefik.http.routers.server.tls=true"
+      # Si le port est différent de 80, utilisez le service suivant:
+      - "traefik.http.services.server.loadbalancer.server.port=8111"
     logging:
       driver: json-file
       options:
@@ -69,40 +72,83 @@ services:
         max-file: "5"
 
   traefik:
-    image: traefik:1.7-alpine
+    image: traefik:v2.9
     restart: on-failure
+    networks:
+      - reverse-proxy
     command:
-      - --logLevel=ERROR
-      - --docker
-      - --docker.watch=true
-      - --docker.exposedByDefault=false
-      - --docker.domain=${VIRTUAL_HOST}
-      - --defaultEntryPoints=http,https
-      - --entryPoints=Name:http Address::80 Redirect.EntryPoint:https
-      - --entryPoints=Name:https Address::443 TLS
-      - --acme=true
-      - --acme.domains=${LETSENCRYPT_HOST}
-      - --acme.email=${LETSENCRYPT_EMAIL}
-      - --acme.storage=acme.json
-      - --acme.OnHostRule=false
-      - --acme.onDemand=false
-      - --acme.entryPoint=https
-      - --acme.httpChallenge
-      - --acme.httpChallenge.entryPoint=http
+      # We are going to use the docker provider
+      - --providers.docker
+      # Only enabled containers should be exposed
+      - --providers.docker.exposedByDefault=false
+      # We want to use the dashbaord
+      - --api.dashboard=true
+      # The entrypoints we ant to expose
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      # Enable ACME (Let's Encrypt): automatic SSL.
+      - --certificatesresolvers.letsencrypt.acme.email=inromualdo@gmail.com
+      - --certificatesresolvers.letsencrypt.acme.storage=/etc/traefik/acme/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.letsencrypt.acme.tlschallenge=true
+      # Global redirect to https
+      - --entrypoints.web.http.redirections.entryPoint.to=websecure
+      - --entrypoints.web.http.redirections.entryPoint.scheme=https
     ports:
+      # The HTTP port
       - "80:80"
       - "443:443"
-    networks:
-      - web
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /opt/traefik/acme.json:/acme.json
+      # The acme.json file is required by Let's Encrypt
+      - ~/.savings/traefik/acme.json:/etc/traefik/acme/acme.json
+    labels:
+      # Since we don't expose containers per default we also need to enable traefik to expose the dashboard.
+      - "traefik.enable=true"
+      # http
+      # Since we are using the http challenge we and use the redirect we need 
+      #  to enable the http entrypoint.
+      - "traefik.http.routers.dashboard-http.entrypoints=web"
+      # The domain we want to listen to
+      - "traefik.http.routers.dashboard-http.rule=Host(`traefik.kaxi.app`)"
+      # We need to attach the api@internal service to the dashboard-http router
+      #  in order for the dashboard to be able to access the api (I think 🙈)
+      - "traefik.http.routers.dashboard-http.service=api@internal"
+      # https
+      # Enable the https entrypoint
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      # The domain we want to listen to
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.kaxi.app`)"
+      # We want to obtain a certificate through Let's Encrypt
+      - "traefik.http.routers.dashboard.tls=true"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      # We need to attach the api@internal service to the dashboard router
+      #  in order for the dashboard to be able to access the api (I think 🙈)
+      - "traefik.http.routers.dashboard.service=api@internal"
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
+  whoami:
+    # A container that exposes an API to show its IP address
+    image: traefik/whoami:v1.7.1
+    container_name: whoami
+    networks:
+      - reverse-proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=reverse-proxy"
+      - "traefik.http.routers.whoami.service=whoami"
+      # URL pour accéder à ce conteneur
+      - "traefik.http.routers.whoami.rule=Host(`whoami.localhost`)"
+      # Activation de TLS
+      - "traefik.http.routers.whoami.tls=true"
+      # Si le port est différent de 80, utilisez le service suivant:
+      - "traefik.http.services.whoami.loadbalancer.server.port=80"
 
 networks:
-  web:
+  reverse-proxy:
     external: true
+    name: reverse-proxy
